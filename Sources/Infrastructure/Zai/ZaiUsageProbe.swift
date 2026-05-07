@@ -300,11 +300,29 @@ public struct ZaiUsageProbe: UsageProbe {
             let quotaType: QuotaType
             let percentageUsed = limit.percentage
 
-            switch limit.type {
-            case "TOKENS_LIMIT":
-                quotaType = .session
-            case "TIME_LIMIT":
+            // Z.ai returns multiple TOKENS_LIMIT entries distinguished only by `unit`.
+            // Observed mapping (z.ai GLM Coding Plan, May 2026):
+            //   TIME_LIMIT  unit=5 -> MCP/Tools usage
+            //   TOKENS_LIMIT unit=3 -> rolling 5-hour session quota
+            //   TOKENS_LIMIT unit=6 -> rolling 7-day weekly quota
+            //   TOKENS_LIMIT unit=7 -> monthly quota (rare, plan-tier dependent)
+            // Without `unit`, both TOKENS_LIMIT entries collapsed into `.session`,
+            // silently dropping the weekly quota — the cap users care about most.
+            switch (limit.type, limit.unit) {
+            case ("TIME_LIMIT", _):
                 quotaType = .timeLimit("MCP")
+            case ("TOKENS_LIMIT", 3):
+                quotaType = .session
+            case ("TOKENS_LIMIT", 6):
+                quotaType = .weekly
+            case ("TOKENS_LIMIT", 7):
+                quotaType = .modelSpecific("Monthly")
+            case ("TOKENS_LIMIT", nil):
+                // Backward-compat: legacy responses with no `unit` field default to session.
+                quotaType = .session
+            case ("TOKENS_LIMIT", let unit?):
+                // Unknown unit — preserve via modelSpecific so it isn't dropped/collapsed.
+                quotaType = .modelSpecific("Tokens (unit \(unit))")
             default:
                 // Skip unknown limit types
                 continue
@@ -379,6 +397,7 @@ private struct QuotaLimitData: Decodable {
 
 private struct QuotaLimit: Decodable {
     let type: String
+    let unit: Int?
     let percentage: Double
     let nextResetTime: FlexibleDate?
 }

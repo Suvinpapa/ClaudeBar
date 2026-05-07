@@ -221,6 +221,110 @@ struct ZaiUsageProbeParsingTests {
         }
     }
 
+    // MARK: - TOKENS_LIMIT unit-distinguishing Tests
+    //
+    // Z.ai's GLM Coding Plan API returns multiple TOKENS_LIMIT entries
+    // distinguished only by the `unit` field. Without parsing `unit`,
+    // both entries collapse into the same QuotaType and one (typically the
+    // weekly cap — the most user-visible one) gets silently dropped.
+    //
+    // Observed unit mapping (May 2026):
+    //   TIME_LIMIT  unit=5  -> MCP / tools usage
+    //   TOKENS_LIMIT unit=3 -> rolling 5-hour session quota
+    //   TOKENS_LIMIT unit=6 -> rolling 7-day weekly quota
+    //   TOKENS_LIMIT unit=7 -> monthly quota (plan-tier dependent)
+
+    static let sampleQuotaLimitResponseRealZai = """
+    {
+      "data": {
+        "limits": [
+          { "type": "TIME_LIMIT", "unit": 5, "percentage": 1, "nextResetTime": 1778591596997 },
+          { "type": "TOKENS_LIMIT", "unit": 3, "percentage": 13, "nextResetTime": 1778100911330 },
+          { "type": "TOKENS_LIMIT", "unit": 6, "percentage": 46, "nextResetTime": 1778418796990 }
+        ]
+      }
+    }
+    """
+
+    @Test
+    func `parses real z.ai response with all three quota tiers (session/weekly/MCP)`() throws {
+        let data = Data(Self.sampleQuotaLimitResponseRealZai.utf8)
+        let snapshot = try ZaiUsageProbe.parseQuotaLimitResponse(data, providerId: "zai")
+
+        #expect(snapshot.quotas.count == 3)
+        #expect(snapshot.quotas.contains { $0.quotaType == .session })
+        #expect(snapshot.quotas.contains { $0.quotaType == .weekly })
+        #expect(snapshot.quotas.contains { $0.quotaType == .timeLimit("MCP") })
+    }
+
+    @Test
+    func `maps TOKENS_LIMIT unit=3 to session`() throws {
+        let json = """
+        { "data": { "limits": [
+          { "type": "TOKENS_LIMIT", "unit": 3, "percentage": 13 }
+        ] } }
+        """
+        let snapshot = try ZaiUsageProbe.parseQuotaLimitResponse(Data(json.utf8), providerId: "zai")
+        #expect(snapshot.quotas.count == 1)
+        #expect(snapshot.quotas.first?.quotaType == .session)
+        #expect(snapshot.quotas.first?.percentRemaining == 87.0)
+    }
+
+    @Test
+    func `maps TOKENS_LIMIT unit=6 to weekly`() throws {
+        let json = """
+        { "data": { "limits": [
+          { "type": "TOKENS_LIMIT", "unit": 6, "percentage": 46 }
+        ] } }
+        """
+        let snapshot = try ZaiUsageProbe.parseQuotaLimitResponse(Data(json.utf8), providerId: "zai")
+        #expect(snapshot.quotas.count == 1)
+        #expect(snapshot.quotas.first?.quotaType == .weekly)
+        #expect(snapshot.quotas.first?.percentRemaining == 54.0)
+    }
+
+    @Test
+    func `does not collapse session and weekly into same quota`() throws {
+        // Regression test: prior implementation mapped both TOKENS_LIMIT entries
+        // to .session, so the second one (weekly) was effectively hidden.
+        let data = Data(Self.sampleQuotaLimitResponseRealZai.utf8)
+        let snapshot = try ZaiUsageProbe.parseQuotaLimitResponse(data, providerId: "zai")
+
+        let sessionQuotas = snapshot.quotas.filter { $0.quotaType == .session }
+        let weeklyQuotas = snapshot.quotas.filter { $0.quotaType == .weekly }
+        #expect(sessionQuotas.count == 1)
+        #expect(weeklyQuotas.count == 1)
+        #expect(sessionQuotas.first?.percentRemaining != weeklyQuotas.first?.percentRemaining)
+    }
+
+    @Test
+    func `legacy TOKENS_LIMIT response without unit still maps to session (backward-compat)`() throws {
+        // Existing tests use payloads without `unit` — preserve original behavior.
+        let json = """
+        { "data": { "limits": [
+          { "type": "TOKENS_LIMIT", "percentage": 65 }
+        ] } }
+        """
+        let snapshot = try ZaiUsageProbe.parseQuotaLimitResponse(Data(json.utf8), providerId: "zai")
+        #expect(snapshot.quotas.first?.quotaType == .session)
+    }
+
+    @Test
+    func `unknown TOKENS_LIMIT unit is preserved via modelSpecific (no silent drop)`() throws {
+        let json = """
+        { "data": { "limits": [
+          { "type": "TOKENS_LIMIT", "unit": 99, "percentage": 25 }
+        ] } }
+        """
+        let snapshot = try ZaiUsageProbe.parseQuotaLimitResponse(Data(json.utf8), providerId: "zai")
+        #expect(snapshot.quotas.count == 1)
+        if case .modelSpecific(let label) = snapshot.quotas.first?.quotaType {
+            #expect(label.contains("99"))
+        } else {
+            Issue.record("Expected .modelSpecific quota type for unknown unit, got \(String(describing: snapshot.quotas.first?.quotaType))")
+        }
+    }
+
     @Test
     func `clamps percentage to valid range`() throws {
         // Given - edge case where percentage might be negative or > 100
