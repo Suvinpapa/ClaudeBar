@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.4.61] - 2026-05-08
+
 ### Added
 - **Optional menu bar quota percentage**: A new setting shows the active provider's quota percentage directly in the menu bar next to the icon, so you can see usage at a glance without opening the popover. Configurable in Settings, with optional pace-aware status coloring driven by `burnRateThreshold`.
 
@@ -719,7 +723,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Menu bar interface with quota display
 - Automatic refresh every 5 minutes
 
-[Unreleased]: https://github.com/tddworks/ClaudeBar/compare/v0.4.60...HEAD
+[Unreleased]: https://github.com/tddworks/ClaudeBar/compare/v0.4.61...HEAD
+[0.4.61]: https://github.com/tddworks/ClaudeBar/compare/v0.4.60...v0.4.61
 [0.4.60]: https://github.com/tddworks/ClaudeBar/compare/v0.4.59...v0.4.60
 [0.4.59]: https://github.com/tddworks/ClaudeBar/compare/v0.4.58...v0.4.59
 [0.4.58]: https://github.com/tddworks/ClaudeBar/compare/v0.4.57...v0.4.58
