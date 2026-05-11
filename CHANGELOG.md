@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Gemini quotas sort by usage**: Models with the lowest remaining fraction (most used) now appear first in the menu, with model ID as a stable tiebreaker. Previously sorted alphabetically, which buried the model you actually need to watch.
+- **Gemini quotas collapse tier-aliased duplicates**: The Code Assist API exposes one tier-level quota under multiple model IDs (e.g. `gemini-2.5-pro`, `gemini-3-pro-preview`, and `gemini-3.1-pro-preview` all return the same Pro-tier bucket). The probe now collapses aliases that share both tier and `(remainingFraction, resetTime)` into a single row labeled with the newest version, so 7 effectively-duplicate rows become 3 distinct quotas (Pro / Flash / Flash-Lite).
 
 ---
 

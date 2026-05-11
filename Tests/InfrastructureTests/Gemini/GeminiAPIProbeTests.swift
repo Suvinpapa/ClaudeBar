@@ -129,15 +129,15 @@ struct GeminiAPIProbeTests {
         { "cloudaicompanionProject": "alien-superstate-rq4hk" }
         """.data(using: .utf8)!
 
-        // API returns models in alphabetical order; the probe must reorder by usage.
+        // Distinct tiers, distinct fractions — covers the sort path without
+        // tripping the alias-dedupe path (which collapses tier-mates).
         let quotaResponse = """
         {
             "buckets": [
-                { "modelId": "gemini-2.5-flash",      "remainingFraction": 0.99,  "resetTime": "2026-05-11T14:56:33Z" },
-                { "modelId": "gemini-2.5-flash-lite", "remainingFraction": 1.0,   "resetTime": "2026-05-11T14:56:33Z" },
-                { "modelId": "gemini-2.5-pro",        "remainingFraction": 0.05,  "resetTime": "2026-05-10T17:28:41Z" },
-                { "modelId": "gemini-3-pro-preview",  "remainingFraction": 0.4,   "resetTime": "2026-05-10T17:28:41Z" },
-                { "modelId": "gemini-other",          "remainingFraction": 1.0,   "resetTime": "2026-05-11T14:56:33Z" }
+                { "modelId": "gemini-2.5-pro",        "remainingFraction": 0.05, "resetTime": "2026-05-10T17:28:41Z" },
+                { "modelId": "gemini-2.5-flash",      "remainingFraction": 0.4,  "resetTime": "2026-05-10T17:29:03Z" },
+                { "modelId": "gemini-2.5-flash-lite", "remainingFraction": 0.99, "resetTime": "2026-05-11T14:56:33Z" },
+                { "modelId": "gemini-other",          "remainingFraction": 1.0,  "resetTime": "2026-05-11T14:56:33Z" }
             ]
         }
         """.data(using: .utf8)!
@@ -162,17 +162,131 @@ struct GeminiAPIProbeTests {
 
         let snapshot = try await probe.probe()
 
-        let modelIds: [String] = snapshot.quotas.compactMap {
-            if case let .modelSpecific(id) = $0.quotaType { return id }
+        let labels: [String] = snapshot.quotas.compactMap {
+            if case let .modelSpecific(label) = $0.quotaType { return label }
             return nil
         }
-        #expect(modelIds == [
-            "gemini-2.5-pro",          // 5%
-            "gemini-3-pro-preview",    // 40%
-            "gemini-2.5-flash",        // 99%
-            "gemini-2.5-flash-lite",   // 100% (tiebreaker: alphabetical)
-            "gemini-other"             // 100%
+        // Tiered models get tier labels (matching gemini-cli's /model UI);
+        // unrecognized models keep their raw ID.
+        #expect(labels == [
+            "Pro",          // 5%
+            "Flash",        // 40%
+            "Flash Lite",   // 99%
+            "gemini-other"  // 100%
         ])
+    }
+
+    @Test
+    func `probe collapses tier-aliased model IDs into one row per tier`() async throws {
+        // The Code Assist API reports one tier-level bucket under every model
+        // alias the user can call (e.g. all three Pro IDs share the Pro
+        // bucket and move in lockstep). Without dedupe, the menu shows the
+        // same quota three times. Survivor is the newest-versioned alias.
+        let homeDir = try makeTemporaryHomeDirectory()
+        try createCredentialsFile(in: homeDir)
+        let mockService = MockNetworkClient()
+
+        let projectsResponse = """
+        { "cloudaicompanionProject": "alien-superstate-rq4hk" }
+        """.data(using: .utf8)!
+
+        let quotaResponse = """
+        {
+            "buckets": [
+                { "modelId": "gemini-2.5-pro",                "remainingFraction": 0.88, "resetTime": "2026-05-10T17:28:41Z" },
+                { "modelId": "gemini-3-pro-preview",          "remainingFraction": 0.88, "resetTime": "2026-05-10T17:28:41Z" },
+                { "modelId": "gemini-3.1-pro-preview",        "remainingFraction": 0.88, "resetTime": "2026-05-10T17:28:41Z" },
+                { "modelId": "gemini-2.5-flash",              "remainingFraction": 0.96, "resetTime": "2026-05-10T17:29:03Z" },
+                { "modelId": "gemini-3-flash-preview",        "remainingFraction": 0.96, "resetTime": "2026-05-10T17:29:03Z" },
+                { "modelId": "gemini-2.5-flash-lite",         "remainingFraction": 1.0,  "resetTime": "2026-05-11T14:56:55Z" },
+                { "modelId": "gemini-3.1-flash-lite-preview", "remainingFraction": 1.0,  "resetTime": "2026-05-11T14:56:55Z" }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        given(mockService)
+            .request(.any)
+            .willProduce { request in
+                let url = request.url?.absoluteString ?? ""
+                if url.contains("loadCodeAssist") {
+                    return (projectsResponse, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                } else {
+                    return (quotaResponse, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                }
+            }
+
+        let probe = GeminiAPIProbe(
+            homeDirectory: homeDir.path,
+            timeout: 1.0,
+            networkClient: mockService,
+            maxRetries: 1
+        )
+
+        let snapshot = try await probe.probe()
+
+        #expect(snapshot.quotas.count == 3)
+
+        let labels: [String] = snapshot.quotas.compactMap {
+            if case let .modelSpecific(label) = $0.quotaType { return label }
+            return nil
+        }
+        // Tier labels match gemini-cli's /model view — independent of which
+        // version alias survived the dedupe, the quota represents the tier.
+        #expect(labels == [
+            "Pro",         // 88% — most used
+            "Flash",       // 96%
+            "Flash Lite"   // 100%
+        ])
+    }
+
+    @Test
+    func `probe falls back to newest preview when only previews are available`() async throws {
+        // If a tier exposes only preview aliases (e.g. on accounts where the
+        // stable model has been retired), the highest-versioned preview wins.
+        let homeDir = try makeTemporaryHomeDirectory()
+        try createCredentialsFile(in: homeDir)
+        let mockService = MockNetworkClient()
+
+        let projectsResponse = """
+        { "cloudaicompanionProject": "alien-superstate-rq4hk" }
+        """.data(using: .utf8)!
+
+        let quotaResponse = """
+        {
+            "buckets": [
+                { "modelId": "gemini-3-pro-preview",   "remainingFraction": 0.5, "resetTime": "2026-05-10T17:28:41Z" },
+                { "modelId": "gemini-3.1-pro-preview", "remainingFraction": 0.5, "resetTime": "2026-05-10T17:28:41Z" }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        given(mockService)
+            .request(.any)
+            .willProduce { request in
+                let url = request.url?.absoluteString ?? ""
+                if url.contains("loadCodeAssist") {
+                    return (projectsResponse, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                } else {
+                    return (quotaResponse, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                }
+            }
+
+        let probe = GeminiAPIProbe(
+            homeDirectory: homeDir.path,
+            timeout: 1.0,
+            networkClient: mockService,
+            maxRetries: 1
+        )
+
+        let snapshot = try await probe.probe()
+
+        #expect(snapshot.quotas.count == 1)
+        if case let .modelSpecific(label) = snapshot.quotas.first?.quotaType {
+            // Even with only previews available, the row is labeled by tier.
+            #expect(label == "Pro")
+        } else {
+            Issue.record("expected modelSpecific quota")
+        }
     }
 
     @Test
