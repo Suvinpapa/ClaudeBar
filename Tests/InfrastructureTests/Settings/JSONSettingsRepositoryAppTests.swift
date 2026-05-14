@@ -116,12 +116,17 @@ struct JSONSettingsRepositoryAppTests {
 
     @Test
     func `setMenuBarDurationEnabled persists value`() {
-        let (repo, dir) = makeRepository()
-        defer { cleanup(dir) }
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claudebar-test-\(UUID().uuidString)")
+        let fileURL = tempDir.appendingPathComponent("settings.json")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        repo.setMenuBarDurationEnabled(true)
+        let store = JSONSettingsStore(fileURL: fileURL)
+        let repo1 = JSONSettingsRepository(store: store)
+        repo1.setMenuBarDurationEnabled(true)
 
-        #expect(repo.menuBarDurationEnabled() == true)
+        let repo2 = JSONSettingsRepository(store: store)
+        #expect(repo2.menuBarDurationEnabled() == true)
     }
 
     @Test
