@@ -124,11 +124,15 @@ public struct ClaudeAPIUsageProbe: UsageProbe, @unchecked Sendable {
     /// reasonably quickly once the window opens.
     static let defaultRetryAfter: TimeInterval = 5 * 60
 
-    /// Default TTL for the in-memory snapshot cache. Five minutes is well
-    /// below the granularity at which quota numbers change (5h / 7d) but
-    /// long enough to drop the 60s monitor-tick polling rate to ~12/hour,
-    /// safely below Anthropic's per-token throttle for this endpoint.
-    public static let defaultSnapshotCacheTTL: TimeInterval = 5 * 60
+    /// Default TTL for the in-memory snapshot cache. Anthropic's
+    /// /api/oauth/usage throttle has been observed handing out 1-hour
+    /// Retry-After windows in response to even one call after a quiet
+    /// period (see deferred memory + anthropics/claude-code#30930), so
+    /// we err on the conservative side. 15 minutes drops the 60s monitor
+    /// cadence to ~4 calls/hour — well under any reasonable threshold —
+    /// while still keeping the displayed quotas fresh enough that a user
+    /// glancing at the menu bar isn't looking at hour-old data.
+    public static let defaultSnapshotCacheTTL: TimeInterval = 15 * 60
 
     // API endpoints
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
